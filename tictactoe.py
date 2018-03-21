@@ -86,11 +86,15 @@ class Environment(object):
         move = random.choice(pos)
         return self.step(move)
 
-    def play_against_random(self, action):
+    def play_against_random(self, action, render=False):
         """Play a move, and then have a random agent play the next move."""
         state, status, done = self.step(action)
+        if render:
+            self.render()
         if not done and self.turn == 2:
             state, s2, done = self.random_step()
+            if render:
+                self.render()
             if done:
                 if s2 == self.STATUS_WIN:
                     status = self.STATUS_LOSE
@@ -186,7 +190,7 @@ def get_reward(status):
             Environment.STATUS_LOSE        : -10
     }[status]
 
-def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=1000):
+def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=500):
     """Train policy gradient."""
     optimizer = optim.Adam(policy.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(
@@ -195,6 +199,7 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=1000):
     episode_invalid_moves = []
     episode_losses = []
     average_returns = []
+    win_loss_tie_ratios = []
 
     for i_episode in range(1,n_episodes+1):
         invalid_moves = 0
@@ -223,6 +228,8 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=1000):
                 i_episode,
                 average_return))
             average_returns.append(average_return)
+            win_loss_tie_ratio = play_games(policy, env, n_games=500)
+            win_loss_tie_ratios.append(win_loss_tie_ratio)
             running_reward = 0
 
         if i_episode % (log_interval) == 0:
@@ -233,7 +240,7 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=1000):
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
-    return policy, episode_invalid_moves, episode_losses, average_returns
+    return policy, win_loss_tie_ratios, episode_invalid_moves, episode_losses, average_returns
 
 
 def first_move_distr(policy, env):
@@ -250,6 +257,18 @@ def load_weights(policy, episode):
     weights = torch.load("ttt/policy-%d.pkl" % episode)
     policy.load_state_dict(weights)
 
+def play_games(policy, env, n_games, render=False):
+    results = {Environment.STATUS_WIN: 0,
+               Environment.STATUS_LOSE: 0,
+               Environment.STATUS_TIE: 0}
+    for game in range(n_games):
+        state = env.reset()
+        done = False
+        while not done:
+            action, _ = select_action(policy, state)
+            state, status, done = env.play_against_random(action, render)
+        results[status] += 1
+    return results
 
 if __name__ == '__main__':
     import sys
@@ -259,16 +278,20 @@ if __name__ == '__main__':
     env = Environment()
 
     if len(sys.argv) == 1:
-         # `python tictactoe.py` to train the agent
-        hidden_units_list = [64, 128, 256]
+
+        # `python tictactoe.py` to train the agent
+        hidden_units_list = [32]
         for hidden_units in hidden_units_list:
             policy = Policy(hidden_size=hidden_units)
-            policy, invalid_moves, episode_losses, average_returns = train(policy, env)
-            hidden_units_results = {"invalid": invalid_moves,
+            policy, ratios, invalid_moves, episode_losses, average_returns = train(policy, env)
+            hidden_units_results = {"ratio": ratios,
+                                    "invalid": invalid_moves,
                                     "loss": episode_losses,
                                     "return": average_returns}
             with open('ttt/hidden_units_single_{}.pkl'.format(hidden_units), 'wb') as csv_file:
                 pickle.dump(hidden_units_results, csv_file, protocol=pickle.HIGHEST_PROTOCOL)
+            print(play_games(policy, env, n_games=5, render=True))
+            print(play_games(policy, env, n_games=100))
     else:
         ep = int(sys.argv[1])
         load_weights(policy, ep)
