@@ -11,6 +11,7 @@ import torch.optim as optim
 import torch.distributions
 from torch.autograd import Variable
 import torch.nn.functional as f
+import pickle
 
 class Environment(object):
     """
@@ -103,7 +104,7 @@ class Environment(object):
 class Swish(nn.Module):
     def __init__(self, beta=1.0, trainable=False):
         super(Swish, self).__init__()
-        self.beta = Variable(torch.cuda.FloatTensor([beta]), requires_grad=trainable)
+        self.beta = Variable(torch.FloatTensor([beta]), requires_grad=trainable)
 
     def forward(self, x):
         return x * f.sigmoid(self.beta * x)
@@ -123,14 +124,16 @@ class Policy(nn.Module):
 
     def forward(self, x):
         fc1_out = self.fc1(x)
-        return self.fc2_out(fc1_out)
+        return self.fc2(fc1_out)
+
 
 def select_action(policy, state):
     """Samples an action from the policy at the state."""
     state = torch.from_numpy(state).long().unsqueeze(0)
     state = torch.zeros(3,9).scatter_(0,state,1).view(1,27)
-    pr = policy(Variable(state))
-    m = torch.distributions.Categorical(pr) 
+    logits = policy(Variable(state))
+    pr = f.softmax(logits, logits.size(0))
+    m = torch.distributions.Categorical(pr)
     action = m.sample()
     log_prob = torch.sum(m.log_prob(action))
     return action.data[0], log_prob
@@ -151,7 +154,11 @@ def compute_returns(rewards, gamma=1.0):
     >>> compute_returns([0,-0.5,5,0.5,-10], 0.9)
     [-2.5965000000000003, -2.8850000000000002, -2.6500000000000004, -8.5, -10.0]
     """
-    # TODO
+    returns = [rewards[-1]]
+    for i, reward in enumerate(rewards[-2::-1]):
+        return_ = gamma * returns[i] + reward
+        returns.append(return_)
+    return returns[::-1]
 
 def finish_episode(saved_rewards, saved_logprobs, gamma=1.0):
     """Samples an action from the policy at the state."""
@@ -167,25 +174,30 @@ def finish_episode(saved_rewards, saved_logprobs, gamma=1.0):
     policy_loss.backward(retain_graph=True)
     # note: retain_graph=True allows for multiple calls to .backward()
     # in a single step
+    return policy_loss.data[0]
 
 def get_reward(status):
     """Returns a numeric given an environment status."""
     return {
             Environment.STATUS_VALID_MOVE  : 0, # TODO
-            Environment.STATUS_INVALID_MOVE: 0,
-            Environment.STATUS_WIN         : 0,
-            Environment.STATUS_TIE         : 0,
-            Environment.STATUS_LOSE        : 0
+            Environment.STATUS_INVALID_MOVE: -100,
+            Environment.STATUS_WIN         : 10,
+            Environment.STATUS_TIE         : 1,
+            Environment.STATUS_LOSE        : -10
     }[status]
 
-def train(policy, env, gamma=1.0, log_interval=1000):
+def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=1000):
     """Train policy gradient."""
     optimizer = optim.Adam(policy.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, step_size=10000, gamma=0.9)
     running_reward = 0
+    episode_invalid_moves = []
+    episode_losses = []
+    average_returns = []
 
-    for i_episode in count(1):
+    for i_episode in range(1,n_episodes+1):
+        invalid_moves = 0
         saved_rewards = []
         saved_logprobs = []
         state = env.reset()
@@ -193,6 +205,7 @@ def train(policy, env, gamma=1.0, log_interval=1000):
         while not done:
             action, logprob = select_action(policy, state)
             state, status, done = env.play_against_random(action)
+            invalid_moves += 1 if status == Environment.STATUS_INVALID_MOVE else 0
             reward = get_reward(status)
             saved_logprobs.append(logprob)
             saved_rewards.append(reward)
@@ -200,12 +213,16 @@ def train(policy, env, gamma=1.0, log_interval=1000):
         R = compute_returns(saved_rewards)[0]
         running_reward += R
 
-        finish_episode(saved_rewards, saved_logprobs, gamma)
+        loss = finish_episode(saved_rewards, saved_logprobs, gamma)
+        episode_losses.append(loss)
+        episode_invalid_moves.append(invalid_moves)
 
         if i_episode % log_interval == 0:
+            average_return = running_reward / log_interval
             print('Episode {}\tAverage return: {:.2f}'.format(
                 i_episode,
-                running_reward / log_interval))
+                average_return))
+            average_returns.append(average_return)
             running_reward = 0
 
         if i_episode % (log_interval) == 0:
@@ -216,6 +233,7 @@ def train(policy, env, gamma=1.0, log_interval=1000):
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+    return policy, episode_invalid_moves, episode_losses, average_returns
 
 
 def first_move_distr(policy, env):
@@ -235,15 +253,23 @@ def load_weights(policy, episode):
 
 if __name__ == '__main__':
     import sys
+    np.random.seed(411)
+
     policy = Policy()
     env = Environment()
 
     if len(sys.argv) == 1:
-        # `python tictactoe.py` to train the agent
-        train(policy, env)
+         # `python tictactoe.py` to train the agent
+        hidden_units_list = [64, 128, 256]
+        for hidden_units in hidden_units_list:
+            policy = Policy(hidden_size=hidden_units)
+            policy, invalid_moves, episode_losses, average_returns = train(policy, env)
+            hidden_units_results = {"invalid": invalid_moves,
+                                    "loss": episode_losses,
+                                    "return": average_returns}
+            with open('ttt/hidden_units_single_{}.pkl'.format(hidden_units), 'wb') as csv_file:
+                pickle.dump(hidden_units_results, csv_file, protocol=pickle.HIGHEST_PROTOCOL)
     else:
-        # `python tictactoe.py <ep>` to print the first move distribution
-        # using weightt checkpoint at episode int(<ep>)
         ep = int(sys.argv[1])
         load_weights(policy, ep)
         print(first_move_distr(policy, env))
