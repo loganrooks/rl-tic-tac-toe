@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributions
 from torch.autograd import Variable
+import torch.nn.functional as f
 
 class Environment(object):
     """
@@ -98,16 +99,31 @@ class Environment(object):
                     raise ValueError("???")
         return state, status, done
 
+
+class Swish(nn.Module):
+    def __init__(self, beta=1.0, trainable=False):
+        super(Swish, self).__init__()
+        self.beta = Variable(torch.cuda.FloatTensor([beta]), requires_grad=trainable)
+
+    def forward(self, x):
+        return x * f.sigmoid(self.beta * x)
+
+
 class Policy(nn.Module):
     """
     The Tic-Tac-Toe Policy
     """
     def __init__(self, input_size=27, hidden_size=64, output_size=9):
         super(Policy, self).__init__()
-        # TODO
+        self.fc1 = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            Swish()
+        )
+        self.fc2 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
-        # TODO
+        fc1_out = self.fc1(x)
+        return self.fc2_out(fc1_out)
 
 def select_action(policy, state):
     """Samples an action from the policy at the state."""
