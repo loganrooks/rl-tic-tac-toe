@@ -136,7 +136,7 @@ def select_action(policy, state):
     state = torch.from_numpy(state).long().unsqueeze(0)
     state = torch.zeros(3,9).scatter_(0,state,1).view(1,27)
     logits = policy(Variable(state))
-    pr = f.softmax(logits, logits.size(0))
+    pr = f.softmax(logits, dim=1)
     m = torch.distributions.Categorical(pr)
     action = m.sample()
     log_prob = torch.sum(m.log_prob(action))
@@ -200,6 +200,7 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=500):
     episode_losses = []
     average_returns = []
     win_loss_tie_ratios = []
+    first_move_distrs = []
 
     for i_episode in range(1,n_episodes+1):
         invalid_moves = 0
@@ -230,6 +231,7 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=500):
             average_returns.append(average_return)
             win_loss_tie_ratio = play_games(policy, env, n_games=500)
             win_loss_tie_ratios.append(win_loss_tie_ratio)
+            first_move_distrs.append(first_move_distr(policy, env))
             running_reward = 0
 
         if i_episode % (log_interval) == 0:
@@ -240,7 +242,7 @@ def train(policy, env, gamma=1.0, n_episodes=50000, log_interval=500):
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
-    return policy, win_loss_tie_ratios, episode_invalid_moves, episode_losses, average_returns
+    return policy, win_loss_tie_ratios, first_move_distrs, episode_invalid_moves, episode_losses, average_returns
 
 
 def first_move_distr(policy, env):
@@ -248,7 +250,8 @@ def first_move_distr(policy, env):
     state = env.reset()
     state = torch.from_numpy(state).long().unsqueeze(0)
     state = torch.zeros(3,9).scatter_(0,state,1).view(1,27)
-    pr = policy(Variable(state))
+    logits = policy(Variable(state))
+    pr = f.softmax(logits, dim=1)
     return pr.data
 
 
@@ -280,18 +283,19 @@ if __name__ == '__main__':
     if len(sys.argv) == 1:
 
         # `python tictactoe.py` to train the agent
-        hidden_units_list = [32]
+        hidden_units_list = [32, 64, 128, 256]
         for hidden_units in hidden_units_list:
             policy = Policy(hidden_size=hidden_units)
-            policy, ratios, invalid_moves, episode_losses, average_returns = train(policy, env)
-            hidden_units_results = {"ratio": ratios,
+            policy, ratios, first_moves, invalid_moves, episode_losses, average_returns = train(policy, env)
+            hidden_units_results = {"first": first_moves,
+                                    "ratio": ratios,
                                     "invalid": invalid_moves,
                                     "loss": episode_losses,
                                     "return": average_returns}
-            with open('ttt/hidden_units_single_{}.pkl'.format(hidden_units), 'wb') as csv_file:
-                pickle.dump(hidden_units_results, csv_file, protocol=pickle.HIGHEST_PROTOCOL)
-            print(play_games(policy, env, n_games=5, render=True))
-            print(play_games(policy, env, n_games=100))
+            with open('ttt/hidden_units_single_{}.pkl'.format(hidden_units), 'wb') as file_:
+                pickle.dump(hidden_units_results, file_, protocol=pickle.HIGHEST_PROTOCOL)
+            # print(play_games(policy, env, n_games=5, render=True))
+            # print(play_games(policy, env, n_games=100))
     else:
         ep = int(sys.argv[1])
         load_weights(policy, ep)
